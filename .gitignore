@@ -1,0 +1,10 @@
+# Ignore build outputs from performing a nix-build or `nix build` command
+result
+result-*
+tmp_out
+# Ignore automatically generated direnv output
+.direnv
+
+bazel-*
+# Ignore NixOS interactive test driver history
+**/.nixos-test-history

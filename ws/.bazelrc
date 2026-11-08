@@ -1,0 +1,9 @@
+# No autoloading of rules_* symbols. Without this setting, loading the BUILD
+# file of @x makes Bazel fetch rules_shell, rules_java, ... from the registry.
+# The defect does not need these repos, and they add more entries to the
+# remote repo contents cache.
+common --incompatible_autoload_externally=
+
+# All repro flags are passed on the command line by the scripts.
+# Put site-specific settings (registry mirror, proxy, ...) in local.bazelrc.
+try-import %workspace%/local.bazelrc

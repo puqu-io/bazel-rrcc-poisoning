@@ -1,0 +1,7 @@
+module(name = "repro")
+
+tpl_repo = use_repo_rule("//:repos.bzl", "tpl_repo")
+x_repo = use_repo_rule("//:repos.bzl", "x_repo")
+
+tpl_repo(name = "tpl")
+x_repo(name = "x")
