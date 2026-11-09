@@ -27,6 +27,9 @@
       packages.${system} = {
         bazel = pkgs.bazel_prebuilt;
         default = pkgs.bazel_prebuilt;
+        # fhs shell for building bazel 8.8.2 from source with the patches in
+        # patches/ and for running the result: nix run .#bazel-build-env
+        bazel-build-env = pkgs.bazel_build_env;
       };
 
       devShells.${system}.default = pkgs.mkShell {
