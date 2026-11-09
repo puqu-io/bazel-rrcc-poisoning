@@ -1,0 +1,98 @@
+diff --git a/src/main/java/com/google/devtools/build/lib/bazel/repository/starlark/StarlarkRepositoryFunction.java b/src/main/java/com/google/devtools/build/lib/bazel/repository/starlark/StarlarkRepositoryFunction.java
+index 79615f7..f1fa4c2 100644
+--- a/src/main/java/com/google/devtools/build/lib/bazel/repository/starlark/StarlarkRepositoryFunction.java
++++ b/src/main/java/com/google/devtools/build/lib/bazel/repository/starlark/StarlarkRepositoryFunction.java
+@@ -135,6 +135,15 @@ public final class StarlarkRepositoryFunction extends RepositoryFunction {
+     return env.getState(State::new).result != null;
+   }
+ 
++  @Override
++  public boolean isFetchInProgressOrDone(Environment env) {
++    var state = env.getState(State::new);
++    // With a worker thread, the rule keeps running across Skyframe restarts of this SkyFunction.
++    // Any restart that happens after the worker has started must not run a repo contents cache
++    // lookup, because the lookup would delete the repo directory underneath the running rule.
++    return state.result != null || state.hasStartedWorker();
++  }
++
+   @Override
+   public RemoteRepoContentsCache.LookupState getRemoteRepoContentsCacheLookupState(Environment env) {
+     return env.getState(State::new).repoContentsCacheLookupState;
+diff --git a/src/main/java/com/google/devtools/build/lib/rules/repository/RepositoryDelegatorFunction.java b/src/main/java/com/google/devtools/build/lib/rules/repository/RepositoryDelegatorFunction.java
+index 56b62f3..10697ac 100644
+--- a/src/main/java/com/google/devtools/build/lib/rules/repository/RepositoryDelegatorFunction.java
++++ b/src/main/java/com/google/devtools/build/lib/rules/repository/RepositoryDelegatorFunction.java
+@@ -267,7 +267,12 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
+           }
+         }
+ 
+-        if (remoteRepoContentsCache != null) {
++        // Do not run the remote lookup once a fetch of this repo has started. With a worker thread
++        // the rule keeps writing into the repo directory across Skyframe restarts of this function,
++        // and a lookup would delete that directory and re-inject the cached contents underneath it.
++        // If the injection then fails, the rule finishes in a directory that lost its earlier files
++        // and that incomplete directory is uploaded under the same cache key.
++        if (remoteRepoContentsCache != null && !handler.isFetchInProgressOrDone(env)) {
+           try {
+             boolean cacheHit =
+                 remoteRepoContentsCache.lookupCache(
+@@ -548,11 +553,11 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
+   /* Determines whether we should use the cached repositories */
+   private boolean shouldUseCachedRepos(Environment env, RepositoryFunction handler, Rule rule)
+       throws InterruptedException {
+-    if (handler.wasJustFetched(env)) {
+-      // If this SkyFunction has finished fetching once, then we should always use the cached
+-      // result. This means that we _very_ recently (as in, in the same command invocation) fetched
+-      // this repo (possibly with --force or --configure), and are only here again due to a Skyframe
+-      // restart very late into RepositoryDelegatorFunction.
++    if (handler.isFetchInProgressOrDone(env)) {
++      // If this SkyFunction has started or finished fetching once, then we should always use the
++      // cached result. This means that we _very_ recently (as in, in the same command invocation)
++      // fetched this repo (possibly with --force or --configure), or are still fetching it on a
++      // worker thread, and are only here again due to a Skyframe restart.
+       return true;
+     }
+ 
+diff --git a/src/main/java/com/google/devtools/build/lib/rules/repository/RepositoryFunction.java b/src/main/java/com/google/devtools/build/lib/rules/repository/RepositoryFunction.java
+index 691c423..5b8c1ad 100644
+--- a/src/main/java/com/google/devtools/build/lib/rules/repository/RepositoryFunction.java
++++ b/src/main/java/com/google/devtools/build/lib/rules/repository/RepositoryFunction.java
+@@ -233,6 +233,19 @@ public abstract class RepositoryFunction {
+     return false;
+   }
+ 
++  /**
++   * Returns true if a fetch of the repo currently being computed has already started (and may still
++   * be running on a worker thread that survives Skyframe restarts) or has finished.
++   *
++   * <p>While this is true, {@link RepositoryDelegatorFunction} must not consult any repo contents
++   * cache for this repo: a cache lookup deletes and re-populates the repo directory, which races
++   * with the fetch that is writing into it. Handlers that fetch on a worker thread must override
++   * this; the default only knows about finished fetches.
++   */
++  public boolean isFetchInProgressOrDone(Environment env) {
++    return wasJustFetched(env);
++  }
++
+   /**
+    * Returns the {@link RemoteRepoContentsCache.LookupState} to use for the remote repo contents
+    * cache lookup of the repository currently being computed.
+diff --git a/src/main/java/com/google/devtools/build/skyframe/WorkerSkyKeyComputeState.java b/src/main/java/com/google/devtools/build/skyframe/WorkerSkyKeyComputeState.java
+index 1970411..f9ca72c 100644
+--- a/src/main/java/com/google/devtools/build/skyframe/WorkerSkyKeyComputeState.java
++++ b/src/main/java/com/google/devtools/build/skyframe/WorkerSkyKeyComputeState.java
+@@ -183,6 +183,14 @@ public class WorkerSkyKeyComputeState<T> implements SkyKeyComputeState {
+     return delegateEnvQueue.take();
+   }
+ 
++  /**
++   * Returns true if a worker thread has been started for this state object and has not been
++   * {@linkplain #close closed} since. The worker may still be running or may have finished.
++   */
++  public synchronized boolean hasStartedWorker() {
++    return workerFuture != null;
++  }
++
+   /**
+    * Closes the state object, and blocks until all pending async work is finished. The state object
+    * will reset to a clean slate after this method finishes.

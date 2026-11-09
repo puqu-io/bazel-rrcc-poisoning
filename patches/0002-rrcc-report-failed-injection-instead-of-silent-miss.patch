@@ -1,0 +1,86 @@
+diff --git a/src/main/java/com/google/devtools/build/lib/remote/AbstractActionInputPrefetcher.java b/src/main/java/com/google/devtools/build/lib/remote/AbstractActionInputPrefetcher.java
+index 4b018ee..086e83b 100644
+--- a/src/main/java/com/google/devtools/build/lib/remote/AbstractActionInputPrefetcher.java
++++ b/src/main/java/com/google/devtools/build/lib/remote/AbstractActionInputPrefetcher.java
+@@ -708,10 +708,14 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
+                           }
+ 
+                           // Treat other download error as CacheNotFoundException so that Bazel can
+-                          // correctly rewind the action/build.
++                          // correctly rewind the action/build. Keep the original error as the
++                          // cause so that callers which cannot rewind (such as the remote repo
++                          // contents cache) can tell a real miss from a failed download.
+                           var digest =
+                               DigestUtil.buildDigest(metadata.getDigest(), metadata.getSize());
+-                          return Completable.error(new CacheNotFoundException(digest, execPath));
++                          var notFound = new CacheNotFoundException(digest, execPath);
++                          notFound.initCause(error);
++                          return Completable.error(notFound);
+                         }));
+ 
+     return downloadCache.execute(
+diff --git a/src/main/java/com/google/devtools/build/lib/remote/RemoteExternalOverlayFileSystem.java b/src/main/java/com/google/devtools/build/lib/remote/RemoteExternalOverlayFileSystem.java
+index 0fb0233..43034b5 100644
+--- a/src/main/java/com/google/devtools/build/lib/remote/RemoteExternalOverlayFileSystem.java
++++ b/src/main/java/com/google/devtools/build/lib/remote/RemoteExternalOverlayFileSystem.java
+@@ -228,10 +228,17 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem
+       // would be more efficient.
+       prefetch(filesToPrefetch);
+     } catch (BulkTransferException e) {
++      // Whatever went wrong, the in-memory contents are unusable: drop them.
++      externalFs.deleteTree(repoDir);
+       if (e.allCausedByCacheNotFoundException()) {
+-        // The cache has lost the .bzl files, which should be treated just like a cache miss.
+-        externalFs.deleteTree(repoDir);
+-        return false;
++        // Either the cache has lost the prefetched files, or the download of a present file failed
++        // (the prefetcher reports both as CacheNotFoundException, see
++        // AbstractActionInputPrefetcher#downloadFileNoCheckRx). The caller treats this like a cache
++        // miss and fetches the repo locally, but must not do so silently: a download that fails
++        // on every build (for example because the zstd-jni native library cannot be loaded) turns
++        // every cache hit into a local fetch, and the result of that fetch is uploaded under the
++        // same key as the entry that could not be read.
++        throw new RemoteRepoInjectionException(filesToPrefetch.size(), e);
+       }
+       throw e;
+     }
+@@ -821,4 +828,39 @@ public final class RemoteExternalOverlayFileSystem extends FileSystem
+       return getFastDigest(path);
+     }
+   }
++
++  /**
++   * Thrown by {@link #injectRemoteRepo} when the cached repo contents were found but the prefetch of
++   * the files needed for loading failed. The caller should treat this like a cache miss, but report
++   * it.
++   */
++  public static final class RemoteRepoInjectionException extends IOException {
++    RemoteRepoInjectionException(int fileCount, BulkTransferException cause) {
++      super(buildMessage(fileCount, cause), cause);
++    }
++
++    private static String buildMessage(int fileCount, BulkTransferException cause) {
++      var sb = new StringBuilder();
++      sb.append("found a cache entry but failed to download ")
++          .append(cause.getSuppressed().length)
++          .append(" of ")
++          .append(fileCount)
++          .append(" prefetched file(s); treating as a cache miss and fetching locally");
++      // The prefetcher reports every download error as "not found". When the download failed for
++      // another reason, the real error is the cause; surface the first one.
++      var rootCauses = new LinkedHashSet<String>();
++      for (Throwable suppressed : cause.getSuppressed()) {
++        var root = suppressed.getCause();
++        if (root != null) {
++          rootCauses.add(root.toString());
++        }
++      }
++      if (rootCauses.isEmpty()) {
++        sb.append(" (the files are missing from the remote cache)");
++      } else {
++        sb.append(" (download error: ").append(Iterables.getFirst(rootCauses, "")).append(")");
++      }
++      return sb.toString();
++    }
++  }
+ }
