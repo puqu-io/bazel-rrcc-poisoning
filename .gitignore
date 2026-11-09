@@ -5,6 +5,6 @@ tmp_out
 # Ignore automatically generated direnv output
 .direnv
 
-bazel-*
 # Ignore NixOS interactive test driver history
 **/.nixos-test-history
+build/
