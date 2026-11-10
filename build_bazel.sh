@@ -19,6 +19,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 BAZEL_VERSION=8.8.2
 BAZEL="${BAZEL:-bazel}"
 BAZEL_SRC="${BAZEL_SRC:-$HERE/build/bazel-src}"
+TMPDIR="${TMPDIR:-$HERE/build/tmp}"
 OUT="${OUT:-$HERE/build/bazel-${BAZEL_VERSION}-rrcc}"
 PATCHES="${PATCHES:-1}"
 EMBED_LABEL="${BAZEL_VERSION}-rrcc"
@@ -26,6 +27,10 @@ EMBED_LABEL="${BAZEL_VERSION}-rrcc"
 command -v "$BAZEL" >/dev/null || { echo "Set BAZEL=/path/to/bazel-${BAZEL_VERSION} (bootstrap Bazel)"; exit 1; }
 command -v git >/dev/null || { echo "git is required"; exit 1; }
 command -v gcc >/dev/null || { echo "a C++ toolchain is required (gcc)"; exit 1; }
+
+if [[ ! -d "$TMPDIR" ]]; then
+  mkdir -p "$TMPDIR"
+fi
 
 if [[ ! -d "$BAZEL_SRC/.git" ]]; then
   echo "=== cloning bazel ${BAZEL_VERSION} into $BAZEL_SRC"
